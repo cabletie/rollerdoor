@@ -1,7 +1,12 @@
-#include <elapsedMillis.h>
 #include <Particle.h>
-#include "application.h"
-#include <stdarg.h>
+#include <elapsedMillis.h>
+#include <application.h>
+// #include <stdarg.h>
+#include <MQTT.h>
+
+#define ARDUINOJSON_ENABLE_PROGMEM 0
+#include <Arduino.h>
+#include <ArduinoJson.h>
 
 int doorUpPin = D0; // Input from door up hall effect sensor
 int doorDownPin = D1; // Input from door down hall effect sensor
@@ -61,9 +66,9 @@ void setup() {
     Particle.variable("rssi", rssi);
     Particle.variable("bssid", sBssid);
 
-    pinMode(doorUp,INPUT); // Our LED pin is output (lighting up the LED)
-    pinMode(boardLed,OUTPUT); // Our on-board LED is output as well
-    pinMode(doorDown,INPUT);  // Our photoresistor pin is input (reading the photoresistor)
+    pinMode(doorUp,INPUT); 
+    pinMode(boardLed,OUTPUT); 
+    pinMode(doorDown,INPUT);  
 
     Serial.begin();
     digitalWrite(boardLed,LOW); // Turn off board LED
