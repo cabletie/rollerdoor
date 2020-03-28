@@ -4,14 +4,25 @@
 // #include <stdarg.h>
 #include <MQTT.h>
 
+#define RD_VERSION "1.0.0"
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+#define __FILENAME__ (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
+char gDeviceInfo[255];  //Device Status string - static version number, build date etc
+
+// 
+// Define IO pins used
+// 
 int doorUpPin = D0; // Input from door up hall effect sensor
 int doorDownPin = D1; // Input from door down hall effect sensor
 int boardLed = D7; // This is the LED that is already on your device.
-unsigned int doorStatus;
+
+//
+// System status vars
+//
+uint32_t doorStatus;
 bool ledStatus;
 int doorUp;
 int doorDown;
@@ -19,12 +30,45 @@ int rssi = 0;
 byte bssid[6];
 String sBssid = "";
 
+#define INTER_PUBLISH_DELAY 1000 // 1 Second
+elapsedMillis senddata_timeout = 0;
+elapsedMillis sendstatus_timeout = 0;
+
+// Setup for remote reset
+#define DELAY_BEFORE_REBOOT 2000
+unsigned int rebootDelayMillis = DELAY_BEFORE_REBOOT;
+unsigned long rebootSync = millis();
+bool resetFlag = false;
+
+// MQTT
+#define ROLLERDOOR "RollerDoor"
+bool published = false;
+
+// Setup for remote AutoDiscovery
+bool autoDiscoverFlag = false;
+bool publishFlag = false;
+
+// socket and network parameters
+int serverPort = 23;
+
+// start TCP servers
+TCPServer tServer = TCPServer(serverPort);
+TCPClient tClient;
+TCPClient dClient;
+TCPClient gClient;
+
+enum tnetState {DISCONNECTED, CONNECTED};
+int telnetState = DISCONNECTED;
+char myIpString[ ] = "000.000.000.000";
+
 const unsigned int unknown = 0;
 const unsigned int open = 1;
 const unsigned int opening = 2;
 const unsigned int closed = 3;
 const unsigned int closing = 4;
+const unsigned int ds_error = 5;
 
+// Use the external antenna if available
 STARTUP( WiFi.selectAntenna(ANT_AUTO));
 
 // Setup doorStatus indicate LED update timer
@@ -41,8 +85,6 @@ void updateDoorMovingStatusLed()
         digitalWrite(boardLed,LOW);
 }
 
-
-
 // Setup doorStatus indicate LED update timer
 void updateDoorUnknownStatusLed()
 {
@@ -56,54 +98,267 @@ void updateDoorUnknownStatusLed()
 Timer moving_timer(300, updateDoorMovingStatusLed);
 Timer unknown_timer(75, updateDoorUnknownStatusLed);
 
+// System.deviceID()
+String deviceID;
+// Last 6 digits of deviceID
+String miniDeviceID;
+// Base MQTT topic
+String baseTopic;
+// Status topic
+String statusTopic;
+
+// Remote Reset Function
+int cloudResetFunction(String command) {
+  resetFlag = true;
+  rebootSync = millis();
+  return 0;
+}
+// Remote AutoDiscovery Command
+int cloudAutoDiscoverFunction(String command) {
+  autoDiscoverFlag = true;
+  return 1;
+}
+
+// Remote Publish Command
+int cloudPublishFunction(String command) {
+  publishFlag = true;
+  return 1;
+}
+
+// function called when an MQTT message is received
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  if(!strcmp(topic,"cmnd/hwc/state")) {
+    autoDiscoverFlag = true;
+    publishFlag = true;
+  }
+}
+
+// Create MQTT Object
+MQTT mqttClient("mqtt.pjndj.net", 1883, MQTT_DEFAULT_KEEPALIVE, mqttCallback, 512);
+
+String tnetToString(int tnetState){
+  String msg = "Unknown";
+  switch (tnetState){
+    case CONNECTED:
+        msg = "Connected";
+        break;
+    case DISCONNECTED:
+        msg = "Disconnected";
+        break;    
+  }
+  return msg;
+}
+
+void updateStatusVars(){
+  // Update values first
+  IPAddress myIP = WiFi.localIP();
+  sprintf(myIpString, "%d.%d.%d.%d", myIP[0], myIP[1], myIP[2], myIP[3]);
+  rssi = WiFi.RSSI();
+  byte bssid[6];
+  WiFi.BSSID(bssid);
+  
+  sBssid = String::format("%02X:%02X:%02X:%02X:%02X:%02X", bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+}
+
+// Serialize JSON and publish to MQTT Client
+void sendMqtt(const String &topic, const String &msg, bool retain){
+  // Try three times 10 seconds apart
+  for (size_t i = 0; i < 3; i++)
+  {
+    if (mqttClient.isConnected()) {
+        mqttClient.publish(topic,msg,retain);
+        // Particle.publish("Debug", "MQTT Published", 300, PRIVATE);
+        return;
+    }
+    mqttClient.connect(ROLLERDOOR);
+    delay(10000);
+    Particle.publish("Debug", "Reconnect MQTT", 300, PRIVATE);
+  }
+}
+
+// Create a JSON object to send as the MQTT auto discovery data
+void sendAutoDiscover(){
+  String msg;
+
+  DynamicJsonDocument jsonDoc(800);
+  // Sample JSON
+  // homeassistant/switch/459293_RL_1/config = {
+    // "name":"Sonoff-GPO-1",
+    // "cmd_t":"~cmnd/POWER",
+    // "stat_t":"~tele/STATE",
+    // "val_tpl":"{{value_json.POWER}}",
+    // "pl_off":"OFF","pl_on":"ON",
+    // "avty_t":"~tele/LWT",
+    // "pl_avail":"Online",
+    // "pl_not_avail":"Offline",
+    // "uniq_id":"459293_RL_1",
+    // "device":{"identifiers":["459293"]},
+    // "~":"gpo-4755/"
+  // } (retained)
+ 
+  // Define common bits to all sensors
+  jsonDoc["stat_t"] = statusTopic;
+  jsonDoc["avty_t"] = "~tele/LWT";
+  jsonDoc["pl_avail"] = "Online";
+  jsonDoc["pl_not_avail"] = "Offline";
+
+  JsonObject device = jsonDoc.createNestedObject("device");
+  JsonArray identifiers = device.createNestedArray("identifiers");
+  identifiers.add(deviceID);
+  JsonArray connections = device.createNestedArray("connections");
+  JsonArray con_map = connections.createNestedArray(); 
+  String myIp = myIpString;
+  con_map.add("ip");
+  con_map.add(myIp);
+  jsonDoc["~"] =  baseTopic;
+
+  // Bits just for each sensor
+  // RoofTemp
+  jsonDoc["name"] = "Roller Door Status";
+  jsonDoc["device_class"] = "garage";
+  jsonDoc["position_template"] = "{{value_json.STATUS}}";
+  jsonDoc["uniq_id"] = miniDeviceID+"_DS";
+  serializeJson(jsonDoc,msg);
+  sendMqtt("homeassistant/sensor/"+jsonDoc["uniq_id"].as<String>()+"/config",msg,true);
+  if (telnetState == CONNECTED) {
+    serializeJsonPretty(jsonDoc, tClient);
+    tClient.println();
+  }
+
+  // ToDo: Send a /config JSON for the status entity
+  jsonDoc["name"] = "Roller Door Status";
+  jsonDoc["stat_t"] = "~tele/HASS_STATE";
+  jsonDoc["json_attributes_topic"] = "~tele/HASS_STATE";
+  jsonDoc["val_tpl"] = "{{value_json[\'RSSI\']}}";
+  jsonDoc.remove("pl_off");
+  jsonDoc.remove("pl_on");
+  jsonDoc.remove("device_class");
+  jsonDoc["unit_of_meas"] = " ";
+  jsonDoc["uniq_id"] = miniDeviceID+"_status";
+  device.remove("connections");
+  device["name"] = ROLLERDOOR;
+  device["model"] = "Particle Photon";
+  device["sw_version"] = RD_VERSION;
+
+  msg = "";
+  serializeJson(jsonDoc,msg);
+  sendMqtt("homeassistant/sensor/"+jsonDoc["uniq_id"].as<String>()+"/config",msg,true);
+}
+
+void publishAll(uint32_t doorStatus) {
+        DynamicJsonDocument jsonDoc(800);
+        jsonDoc["STATUS"] = doorStatus;
+        // Send update to TCP Client
+        if (telnetState == CONNECTED) {
+            serializeJsonPretty(jsonDoc, tClient);
+            tClient.println();
+        }
+
+        // Send update to MQTT Client
+        String msg;
+        serializeJson(jsonDoc,msg);
+        sendMqtt(statusTopic,msg,false);
+}
 
 void setup() {
+
     doorStatus = unknown;
+	Serial1.begin(4800,SERIAL_8N1); // open serial communications to the HWC
+
+    // Announce function
+    Particle.function("reset", cloudResetFunction);
+    Particle.function("mqtt", cloudAutoDiscoverFunction);
+    Particle.function("publish", cloudPublishFunction);
+    Particle.connect();
+
+    // Initialise some static info
+    deviceID = System.deviceID();
+    miniDeviceID = deviceID.substring(deviceID.length()-6);
+    baseTopic = "rd-"+miniDeviceID+"/";
+    statusTopic = baseTopic+"tele/STATE";
+
+    // Wait for cloud connection
+	while(!Particle.connected())
+        Particle.process();
+
+    // connect to the MQTT broker
+    mqttClient.connect(ROLLERDOOR);
+    if(mqttClient.isConnected()){
+        mqttClient.subscribe("cmnd/rollerdoor/state");
+        sendAutoDiscover();
+    }
+
+    // Find my IP address and make it and a bunch of variables publicly available via particle.io
+    Particle.variable("devIP", myIpString, STRING);  // Var used to get IP for telnet client.
+    Particle.variable("telnetState",telnetState);
+    Particle.variable("rssi", rssi);
+    Particle.variable("bssid", sBssid);
+
+    // Operational variables
+    Particle.variable("deviceInfo",gDeviceInfo);
+    Particle.variable("doorStatus",doorStatus);
+
+    updateStatusVars();
+
+    // Send some system version info
+    snprintf(gDeviceInfo, sizeof(gDeviceInfo),
+        "{\"Application\":\"%s\",\"Version\":\"%s\",\"Date\":\"%s\",\"Time\":\"%s\",\"Sysver\":\"%s\",\"RSSI\":\"%d\",\"IPAddress\":\"%s\" }"
+        ,__FILENAME__
+        ,RD_VERSION
+        ,__DATE__
+        ,__TIME__
+        ,(const char*)System.version()  // cast required for String
+        ,rssi
+        ,myIpString
+    );
+
+    //Then publish the STATUS stuff
+    if (mqttClient.isConnected()) {
+        mqttClient.publish(baseTopic+"tele/LWT","Online",true);
+        mqttClient.publish(baseTopic+"tele/HASS_STATE",gDeviceInfo,true);
+    }
+
+    tServer.begin(); // begin listening for TCP connections
+
     // Particle.variable("doorStatus",doorStatus);
     Particle.publish("doorStatus","unknown",60,PRIVATE);
     Particle.publish("doorEvent","127",60,PRIVATE);
-
-    Particle.variable("rssi", rssi);
-    Particle.variable("bssid", sBssid);
 
     pinMode(doorUp,INPUT); 
     pinMode(boardLed,OUTPUT); 
     pinMode(doorDown,INPUT);  
 
-    Serial.begin();
+    // Serial.begin();
     digitalWrite(boardLed,LOW); // Turn off board LED
     ledStatus = LOW;
-    // WiFi.off();
-    WiFi.selectAntenna(ANT_INTERNAL);
-    // WiFi.on();
-    // while(!WiFi.ready())
-    // {
-    //   Serial.println("Waiting for WiFi Internal");
-    //   Particle.process();
-      delay(1000);
-    // }
-    rssi = WiFi.RSSI();
-    Particle.publish("rssiInternal",String(rssi),60,PRIVATE);
-    // WiFi.off();
-    WiFi.selectAntenna(ANT_EXTERNAL);
-    // WiFi.on();
-    // while(!WiFi.ready())
-    // {
-    //   Serial.println("Waiting for WiFi External");
-    //   Particle.process();
-      delay(1000);
-    // }
-    rssi = WiFi.RSSI();
-    WiFi.BSSID(bssid); 
-    Particle.publish("rssiExternal",String(rssi),60,PRIVATE);
-    sBssid = String::format("%02X:%02X:%02X:%02X:%02X:%02X", bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
-    Particle.publish("BSSID",sBssid,60,PRIVATE);
 }
 
 // Now for the loop.
 
 void loop()
 {
+    uint32_t oldDoorStatus = unknown;
+    // Create the main JSON document for seding
+    DynamicJsonDocument jsonDoc(800);
+
+    // Deal with setting up Telnet client
+    if (tClient.connected()) {
+	    if(telnetState == DISCONNECTED){
+		    telnetState = CONNECTED;
+		    Particle.publish("rollerdoor/tcp_connection","Connected",PRIVATE);
+		    published = false; // Trigger sending of data immediately
+	    }
+	}
+	else {
+		// if no client is yet connected, check for a new connection
+		if (telnetState == CONNECTED) {
+			tClient.stop();
+			telnetState = DISCONNECTED;
+  		Particle.publish("rollerdoor/tcp_connection","Disconnected",PRIVATE);
+		}
+		tClient = tServer.available();
+	}
+
     if((doorStatus == unknown) & !unknown_timer.isActive())
         unknown_timer.start();
     else if((doorStatus != unknown) & unknown_timer.isActive())
@@ -114,55 +369,91 @@ void loop()
 
     if (doorUp & doorDown)
     {
-            if (doorStatus != unknown)
+            if (doorStatus != ds_error)
             {
-                Particle.publish("doorStatus","unknown",60,PRIVATE);
+                Particle.publish("doorStatus","error",60,PRIVATE);
                 Particle.publish("doorEvent","127",60,PRIVATE);
-                Serial.println("Housten, we have a problem");
                 moving_timer.stop();
                 unknown_timer.start();
+                doorStatus = ds_error;
+                if (oldDoorStatus != doorStatus){
+                    publishAll(doorStatus);
+                    oldDoorStatus = doorStatus;
+                }
+                Serial.println("Housten, we have a problem");
             }
-            doorStatus = unknown;
     }
     else if (doorUp)
+    {
+        if ((doorStatus==opening) | (doorStatus==unknown) | (doorStatus==closing))
         {
-            if ((doorStatus==opening) | (doorStatus==unknown) | (doorStatus==closing))
-            {
-                Particle.publish("doorStatus","open",60,PRIVATE);
-                Particle.publish("doorEvent","255",60,PRIVATE);
-                Serial.println("Door now open");
-                moving_timer.stop();
-                digitalWrite(boardLed,HIGH);
-            }
-            doorStatus=open;
+            Particle.publish("doorStatus","open",60,PRIVATE);
+            Particle.publish("doorEvent","255",60,PRIVATE);
+            moving_timer.stop();
+            digitalWrite(boardLed,HIGH);
+            Serial.println("Door now open");
         }
-        else if(doorStatus==open)
-        {// was open
-            Particle.publish("doorStatus","closing",60,PRIVATE);
-            Particle.publish("doorEvent","85",60,PRIVATE);
-            doorStatus=closing;
-            moving_timer.start();
-            Serial.println("Door now closing");
+        doorStatus=open;
+        if (oldDoorStatus != doorStatus){
+            publishAll(doorStatus);
+            oldDoorStatus = doorStatus;
         }
+    }
+    else if(doorStatus==open)
+    {// was open
+        Particle.publish("doorStatus","closing",60,PRIVATE);
+        Particle.publish("doorEvent","85",60,PRIVATE);
+        moving_timer.start();
+        doorStatus=closing;
+        if (oldDoorStatus != doorStatus){
+            publishAll(doorStatus);
+            oldDoorStatus = doorStatus;
+        }
+        Serial.println("Door now closing");
+    }
     else if (doorDown)
+    {
+        if ((doorStatus==closing) | (doorStatus == unknown) | (doorStatus == opening))
         {
-            if ((doorStatus==closing) | (doorStatus == unknown) | (doorStatus == opening))
-            {
-                Particle.publish("doorStatus","closed",60,PRIVATE);
-                Particle.publish("doorEvent","0",60,PRIVATE);
-                Serial.println("Door now closed");
-                moving_timer.stop();
-                digitalWrite(boardLed,LOW);
-            }
-            doorStatus=closed;
+            Particle.publish("doorStatus","closed",60,PRIVATE);
+            Particle.publish("doorEvent","0",60,PRIVATE);
+            moving_timer.stop();
+            digitalWrite(boardLed,LOW);
+            Serial.println("Door now closed");
         }
-        else if(doorStatus==closed)
-            { // was closed
-                Particle.publish("doorStatus","opening",60,PRIVATE);
-                Particle.publish("doorEvent","170",60,PRIVATE);
-                doorStatus=opening;
-                moving_timer.start();
-                Serial.println("Door now opening");
+        doorStatus=closed;
+        if (oldDoorStatus != doorStatus){
+            publishAll(doorStatus);
+            oldDoorStatus = doorStatus;
         }
-        rssi=WiFi.RSSI();
+    }
+    else if(doorStatus==closed)
+    { // was closed
+        Particle.publish("doorStatus","opening",60,PRIVATE);
+        Particle.publish("doorEvent","170",60,PRIVATE);
+        moving_timer.start();
+        doorStatus=opening;
+        if (oldDoorStatus != doorStatus){
+            publishAll(doorStatus);
+            oldDoorStatus = doorStatus;
+        }
+        Serial.println("Door now opening");
+    }
+    rssi=WiFi.RSSI();
+
+    //  Remote AutoDiscovery Function
+    if (autoDiscoverFlag) {
+        autoDiscoverFlag = false;
+        Particle.publish("Debug", "AutoDiscovery triggered", 300, PRIVATE);
+        delay(INTER_PUBLISH_DELAY); // A little delay after each publish to not overload the quota of 4 per second
+        sendAutoDiscover();
+    }
+    //  Remote publish Function
+    if (publishFlag) {
+        publishFlag = false;
+        Particle.publish("Debug", "Publish triggered", 300, PRIVATE);
+        // Initiate a publish of current data
+        published=false;
+    }
+
 }
