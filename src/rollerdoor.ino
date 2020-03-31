@@ -4,7 +4,7 @@
 // #include <stdarg.h>
 #include <MQTT.h>
 
-#define RD_VERSION "1.2.0"
+#define RD_VERSION "1.3.0"
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -31,11 +31,14 @@ int rssi = 0;
 byte bssid[6];
 String sBssid = "";
 // minimum time between particle.publish calls
-#define INTER_PUBLISH_DELAY 1000 // 1 Second
+// 1 Second
+#define INTER_PUBLISH_DELAY 1000
 // period between sending continuous data readings
-#define SEND_DATA_PERIOD 60000UL // 1 Minute
+// 1 minute
+#define SEND_DATA_PERIOD 60000UL
 // period between sending system status messages
-#define SEND_STATUS_PERIOD 300000UL // 5 Minutes
+// 5 minutes
+#define SEND_STATUS_PERIOD 300000UL
 elapsedMillis senddata_timeout = 0;
 elapsedMillis sendstatus_timeout = 0;
 
@@ -61,8 +64,6 @@ int serverPort = 23;
 // start TCP servers
 TCPServer tServer = TCPServer(serverPort);
 TCPClient tClient;
-TCPClient dClient;
-TCPClient gClient;
 
 enum tnetState {DISCONNECTED, CONNECTED};
 int telnetState = DISCONNECTED;
@@ -308,11 +309,11 @@ void setup() {
     // Pick out the middle bit of the ID 
     // - the RH end seems to not change sometimes and 
     // - the LH has too many zeroes.
-    // int didl = deviceID.length();
-    // int start = (didl-UID_LENGTH)<0?0:(didl-UID_LENGTH);
-    // start = (start>UID_LENGTH)?UID_LENGTH:start;
-    // miniDeviceID = deviceID.substring(start,start+UID_LENGTH);
-    miniDeviceID = deviceID.substring(8,15);
+    int didl = deviceID.length();
+    int start = (didl-UID_LENGTH)<0?0:(didl-UID_LENGTH);
+    start = (start>UID_LENGTH)?UID_LENGTH:start;
+    miniDeviceID = deviceID.substring(start,start+UID_LENGTH);
+    // miniDeviceID = deviceID.substring(8,15);
     Serial.printf("miniDeviceID: %s\n",miniDeviceID.c_str());
     baseTopic = "rd-"+miniDeviceID+"/";
     statusTopic = baseTopic+"tele/STATE";
