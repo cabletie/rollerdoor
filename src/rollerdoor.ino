@@ -285,7 +285,7 @@ void publishAll(uint32_t doorStatus) {
         // Send update to MQTT Client
         String msg;
         serializeJson(jsonDoc,msg);
-        sendMqtt(statusTopic,msg,false);
+        sendMqtt(statusTopic,msg,true);
 }
 
 void setup() {
@@ -346,7 +346,7 @@ void setup() {
 
     // Particle.variable("doorStatus",doorStatus);
     Particle.publish("doorStatus","unknown",60,PRIVATE);
-    Particle.publish("doorEvent","127",60,PRIVATE);
+    // Particle.publish("doorEvent","127",60,PRIVATE);
 
     // Serial.begin();
     digitalWrite(boardLed,LOW); // Turn off board LED
@@ -391,7 +391,7 @@ void loop()
             if (doorStatus != ds_error)
             {
                 Particle.publish("doorStatus","error",60,PRIVATE);
-                Particle.publish("doorEvent","127",60,PRIVATE);
+                // Particle.publish("doorEvent","127",60,PRIVATE);
                 moving_timer.stop();
                 unknown_timer.start();
                 doorStatus = ds_error;
@@ -407,7 +407,7 @@ void loop()
         if ((doorStatus==opening) | (doorStatus==unknown) | (doorStatus==closing))
         {
             Particle.publish("doorStatus","open",60,PRIVATE);
-            Particle.publish("doorEvent","255",60,PRIVATE);
+            // Particle.publish("doorEvent","255",60,PRIVATE);
             moving_timer.stop();
             digitalWrite(boardLed,HIGH);
             Serial.println("Door now open");
@@ -421,7 +421,7 @@ void loop()
     else if(doorStatus==open)
     {// was open
         Particle.publish("doorStatus","closing",60,PRIVATE);
-        Particle.publish("doorEvent","85",60,PRIVATE);
+        // Particle.publish("doorEvent","85",60,PRIVATE);
         moving_timer.start();
         doorStatus=closing;
         if (oldDoorStatus != doorStatus){
@@ -435,7 +435,7 @@ void loop()
         if ((doorStatus==closing) | (doorStatus == unknown) | (doorStatus == opening))
         {
             Particle.publish("doorStatus","closed",60,PRIVATE);
-            Particle.publish("doorEvent","0",60,PRIVATE);
+            // Particle.publish("doorEvent","0",60,PRIVATE);
             moving_timer.stop();
             digitalWrite(boardLed,LOW);
             Serial.println("Door now closed");
@@ -449,7 +449,7 @@ void loop()
     else if(doorStatus==closed)
     { // was closed
         Particle.publish("doorStatus","opening",60,PRIVATE);
-        Particle.publish("doorEvent","170",60,PRIVATE);
+        // Particle.publish("doorEvent","170",60,PRIVATE);
         moving_timer.start();
         doorStatus=opening;
         if (oldDoorStatus != doorStatus){
