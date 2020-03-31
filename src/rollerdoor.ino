@@ -18,7 +18,7 @@ char gDeviceInfo[255];  //Device Status string - static version number, build da
 // Define IO pins used
 // 
 int doorUpPin = D0; // Input from door up hall effect sensor
-int doorDownPin = D2; // Input from door down hall effect sensor
+int doorDownPin = D1; // Input from door down hall effect sensor
 int boardLed = D7; // This is the LED that is already on your device.
 
 //
