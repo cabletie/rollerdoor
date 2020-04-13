@@ -4,7 +4,7 @@
 // #include <stdarg.h>
 #include <MQTT.h>
 
-#define RD_VERSION "1.4.0"
+#define RD_VERSION "1.5.0"
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <Arduino.h>
 #include <ArduinoJson.h>
