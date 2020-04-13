@@ -12,7 +12,7 @@
 #define __FILENAME__ (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #include <map>
 #include <unordered_map>
-char gDeviceInfo[255];  //Device Status string - static version number, build date etc
+char gDeviceInfo[255]; // Device Status string - static version number, build date etc
 
 // 
 // Define IO pins used
@@ -31,6 +31,7 @@ int doorDown;
 int rssi = 0;
 byte bssid[6];
 String sBssid = "";
+
 // minimum time between particle.publish calls
 // 1 Second
 #define INTER_PUBLISH_DELAY 1000
@@ -73,25 +74,35 @@ int serverPort = 23;
 TCPServer tServer = TCPServer(serverPort);
 TCPClient tClient;
 
-enum tnetState {DISCONNECTED, CONNECTED};
-int telnetState = DISCONNECTED;
+enum telnetStates {DISCONNECTED, CONNECTED};
+telnetStates telnetState = DISCONNECTED;
 char myIpString[ ] = "000.000.000.000";
 
 // Operational status vars
-enum doorState {unknown,open,opening,closed,closing,ds_error};
-const char* statusNames[] = {"unknown","open","opening","closed","closing","error"};
-
-uint32_t doorStatus = unknown;
-uint32_t oldDoorStatus = unknown;
-
-// Release pulsewidth timer
-void endReleasePulse()
-{
-    digitalWrite(doorButtonPin,HIGH);
-}
+enum doorStates {unknown,open,opening,closed,closing,ds_error,stopped};
+const char* stateNames[] = {"unknown","open","opening","closed","closing","error","stopped"};
+enum doorCommands {NONE, OPEN, CLOSE, STOP};
+doorCommands doorCommand = NONE;
+doorStates doorStatus = unknown;
+doorStates oldDoorStatus = unknown;
 
 // Times the period the door release pulse is active
-Timer pulseTimer(RELEASE_PULSE_WIDTH, endReleasePulse,TRUE);
+Timer pulseTimer(RELEASE_PULSE_WIDTH, releaseTheButton,TRUE);
+
+// Actually push the button to the roller door
+// Duration is set by RELEASE_PULSE_WIDTH ms
+void pushTheButton(){
+	digitalWrite(doorButtonPin,LOW);
+	pulseTimer.start();
+	Serial.println("Pushing the button");
+}
+
+// Callback to release the button once the pulsewidth timer has expired
+void releaseTheButton()
+{
+	digitalWrite(doorButtonPin,HIGH);
+	Serial.println("Releasing the button");
+}
 
 // Use the external antenna if available
 STARTUP( WiFi.selectAntenna(ANT_AUTO));
@@ -152,6 +163,11 @@ int cloudPublishFunction(String command) {
 
 // function called when an MQTT message is received
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+	Serial.println(topic);
+	char p[length + 1];
+	memcpy(p, payload, length);
+	p[length] = 0;
+
   if(!strcmp(topic,"cmnd/rollerdoor/autodiscover")) {
     autoDiscoverFlag = true; // Send autodiscover information
     publishFlag = true;
@@ -162,11 +178,21 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
   if(!strcmp(topic,baseTopic+"cover/set")) {
     pushButton = true; // Push the door open/close button
+		if (!strcmp(p, "OPEN"))
+				doorCommand = OPEN;
+		else if (!strcmp(p, "CLOSE"))
+				doorCommand = CLOSE;
+		else if (!strcmp(p, "STOP"))
+				doorCommand = STOP;
+		else
+				doorCommand = NONE;
+		Serial.println(p);
   }
 }
 
 // Create MQTT Object
 MQTT mqttClient("192.168.86.87", 1883, MQTT_DEFAULT_KEEPALIVE, mqttCallback, 512);
+
 //  #define MQTT_HOST_DISCOVERY
 #ifdef MQTT_HOST_DISCOVERY
 void MqttDiscoverServer(void)
@@ -219,7 +245,7 @@ void updateStatus(){
     sBssid = String::format("%02X:%02X:%02X:%02X:%02X:%02X", bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
     // Send some system version info
     snprintf(gDeviceInfo, sizeof(gDeviceInfo),
-        "{\"Application\":\"%s\",\"Version\":\"%s\",\"Date\":\"%s\",\"Time\":\"%s\",\"Sysver\":\"%s\",\"RSSI\":\"%d\",\"IPAddress\":\"%s\" }"
+        "{\"Application\":\"%s\",\"Version\":\"%s\",\"Date\":\"%s\",\"Time\":\"%s\",\"Sysver\":\"%s\",\"RSSI\":\"%d\",\"IPAddress\":\"%s\",\"DoorStatus\":\"%s\" }"
         ,__FILENAME__
         ,RD_VERSION
         ,__DATE__
@@ -227,6 +253,7 @@ void updateStatus(){
         ,(const char*)System.version()  // cast required for String
         ,rssi
         ,myIpString
+				,stateNames[doorStatus]
     );
 
     //Then publish the STATUS stuff
@@ -246,7 +273,6 @@ void sendMqtt(const String &topic, const String &msg, bool retain){
         // Particle.publish("Debug", "MQTT Published", 300, PRIVATE);
         return;
     }
-    mqttClient.connect(ROLLERDOOR);
     mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
     delay(10000);
     Particle.publish("Debug", "Reconnect MQTT", 300, PRIVATE);
@@ -290,7 +316,7 @@ void sendAutoDiscover(){
   jsonDoc["~"] =  baseTopic;
 
   // Bits just for each sensor
-  jsonDoc["name"] = "Roller Door Status";
+  jsonDoc["name"] = "Roller Door";
   jsonDoc["dev_cla"] = "garage";
   jsonDoc["val_tpl"] = "{{value_json.STATUS}}";
   jsonDoc["uniq_id"] = miniDeviceID+"_DS";
@@ -305,13 +331,18 @@ void sendAutoDiscover(){
   }
 
   // Prepare a /config JSON for the status entity
-  jsonDoc["name"] = "Roller Door Status";
+  jsonDoc["name"] = "Roller Door Controller Status";
   jsonDoc["stat_t"] = "~tele/HASS_STATE";
   jsonDoc["json_attributes_topic"] = "~tele/HASS_STATE";
   jsonDoc["val_tpl"] = "{{value_json[\'RSSI\']}}";
+
   jsonDoc.remove("pl_off");
   jsonDoc.remove("pl_on");
   jsonDoc.remove("dev_cla");
+  jsonDoc.remove("cmd_t");
+  jsonDoc.remove("pl_cls");
+  jsonDoc.remove("pl_open");
+
   jsonDoc["unit_of_meas"] = " ";
   jsonDoc["uniq_id"] = miniDeviceID+"_status";
   device.remove("connections");
@@ -326,7 +357,7 @@ void sendAutoDiscover(){
 
 void publishAll(uint32_t doorStatus) {
         DynamicJsonDocument jsonDoc(800);
-        jsonDoc["STATUS"] = statusNames[doorStatus];
+        jsonDoc["STATUS"] = stateNames[doorStatus];
         // Send update to TCP Client
         if (telnetState == CONNECTED) {
             serializeJsonPretty(jsonDoc, tClient);
@@ -378,10 +409,11 @@ void setup() {
         Particle.process();
 
     // connect to the MQTT broker
-    mqttClient.connect(ROLLERDOOR);
+    mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
     if(mqttClient.isConnected()){
         mqttClient.subscribe("cmnd/rollerdoor/state");
         mqttClient.subscribe("cmnd/rollerdoor/autodiscover");
+				mqttClient.subscribe(baseTopic+"cover/set");
         sendAutoDiscover();
     }
 
@@ -516,9 +548,56 @@ void loop()
 
     // Process the command to open/close the door
     if(pushButton){
-        pushButton = false;
-        digitalWrite(doorButtonPin,LOW);
-        pulseTimer.start();
+        pushButton = false; // No more to do
+				switch (doorCommand)
+				{
+				case NONE:
+					break;
+				case STOP:
+					if ((doorStatus == opening )|(doorStatus == closing))
+						{
+							pushTheButton();
+							doorStatus = stopped;
+						}
+					break;
+				case OPEN:
+					if(doorStatus == closing)
+						{ 
+							pushTheButton();
+							doorStatus = stopped;
+							pushButton = true;
+						}
+					if(doorStatus == closed) 
+						{ 
+							pushTheButton();
+						}
+					if(doorStatus == unknown)
+						{ 
+							pushTheButton();
+							pushButton = true;
+						}
+					break;
+				case CLOSE:
+					if(doorStatus == opening)
+						{ 
+							pushTheButton();
+							doorStatus = stopped;
+							pushButton = true;
+						}
+					if(doorStatus == open) 
+						{ 
+							pushTheButton();
+						}
+					if(doorStatus == unknown)
+						{ 
+							pushTheButton();
+							pushButton = true;
+						}
+					break;
+				
+				default:
+					break;
+				}
     }
 
     rssi=WiFi.RSSI();
