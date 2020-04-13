@@ -4,7 +4,7 @@
 // #include <stdarg.h>
 #include <MQTT.h>
 
-#define RD_VERSION "1.3.0"
+#define RD_VERSION "1.4.0"
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -20,6 +20,7 @@ char gDeviceInfo[255];  //Device Status string - static version number, build da
 int doorUpPin = D0; // Input from door up hall effect sensor
 int doorDownPin = D1; // Input from door down hall effect sensor
 int boardLed = D7; // This is the LED that is already on your device.
+int doorButtonPin = D2; // Output to push the door open/close button
 
 //
 // System status vars
@@ -39,8 +40,11 @@ String sBssid = "";
 // period between sending system status messages
 // 5 minutes
 #define SEND_STATUS_PERIOD 300000UL
+
 elapsedMillis senddata_timeout = 0;
 elapsedMillis sendstatus_timeout = 0;
+// Roller door release pulse width in ms
+#define RELEASE_PULSE_WIDTH 500
 
 // Setup for remote reset
 #define DELAY_BEFORE_REBOOT 2000
@@ -51,12 +55,16 @@ bool resetFlag = false;
 // MQTT
 #define ROLLERDOOR "RollerDoor"
 #define UID_LENGTH 8
+#define MQTT_USER "mosquitto"
+#define MQTT_PASS "%0mosquitto"
+
 bool published = false;
 
 // Setup for remote AutoDiscovery
 bool autoDiscoverFlag = false;
 bool publishFlag = false;
 bool sendStateFlag = false;
+bool pushButton = false;
 
 // socket and network parameters
 int serverPort = 23;
@@ -75,6 +83,15 @@ const char* statusNames[] = {"unknown","open","opening","closed","closing","erro
 
 uint32_t doorStatus = unknown;
 uint32_t oldDoorStatus = unknown;
+
+// Release pulsewidth timer
+void endReleasePulse()
+{
+    digitalWrite(doorButtonPin,HIGH);
+}
+
+// Times the period the door release pulse is active
+Timer pulseTimer(RELEASE_PULSE_WIDTH, endReleasePulse,TRUE);
 
 // Use the external antenna if available
 STARTUP( WiFi.selectAntenna(ANT_AUTO));
@@ -143,10 +160,40 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     sendStateFlag = true; // Send state information
     publishFlag = true;
   }
+  if(!strcmp(topic,baseTopic+"cover/set")) {
+    pushButton = true; // Push the door open/close button
+  }
 }
 
 // Create MQTT Object
-MQTT mqttClient("mqtt.pjndj.net", 1883, MQTT_DEFAULT_KEEPALIVE, mqttCallback, 512);
+MQTT mqttClient("192.168.86.87", 1883, MQTT_DEFAULT_KEEPALIVE, mqttCallback, 512);
+//  #define MQTT_HOST_DISCOVERY
+#ifdef MQTT_HOST_DISCOVERY
+void MqttDiscoverServer(void)
+{
+  if (!Wifi.mdns_begun) { return; }
+
+  int n = MDNS.queryService("mqtt", "tcp");  // Search for mqtt service
+
+  AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_MDNS D_QUERY_DONE " %d"), n);
+
+  if (n > 0) {
+    uint32_t i = 0;            // If the hostname isn't set, use the first record found.
+#ifdef MDNS_HOSTNAME
+    for (i = n; i > 0; i--) {  // Search from last to first and use first if not found
+      if (!strcmp(MDNS.hostname(i).c_str(), MDNS_HOSTNAME)) {
+        break;                 // Stop at matching record
+      }
+    }
+#endif  // MDNS_HOSTNAME
+    SettingsUpdateText(SET_MQTT_HOST, MDNS.IP(i).toString().c_str());
+    Settings.mqtt_port = MDNS.port(i);
+
+    AddLog_P2(LOG_LEVEL_INFO, PSTR(D_LOG_MDNS D_MQTT_SERVICE_FOUND " %s, " D_IP_ADDRESS " %s, " D_PORT " %d"), MDNS.hostname(i).c_str(), SettingsText(SET_MQTT_HOST), Settings.mqtt_port);
+  }
+}
+#endif  // MQTT_HOST_DISCOVERY
+
 
 String tnetToString(int tnetState){
   String msg = "Unknown";
@@ -200,6 +247,7 @@ void sendMqtt(const String &topic, const String &msg, bool retain){
         return;
     }
     mqttClient.connect(ROLLERDOOR);
+    mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
     delay(10000);
     Particle.publish("Debug", "Reconnect MQTT", 300, PRIVATE);
   }
@@ -246,6 +294,9 @@ void sendAutoDiscover(){
   jsonDoc["dev_cla"] = "garage";
   jsonDoc["val_tpl"] = "{{value_json.STATUS}}";
   jsonDoc["uniq_id"] = miniDeviceID+"_DS";
+  jsonDoc["cmd_t"] = "~cover/set";
+  jsonDoc["pl_cls"] = "CLOSE";
+  jsonDoc["pl_open"] = "OPEN";
   serializeJson(jsonDoc,msg);
   sendMqtt("homeassistant/cover/"+jsonDoc["uniq_id"].as<String>()+"/config",msg,true);
   if (telnetState == CONNECTED) {
@@ -253,7 +304,7 @@ void sendAutoDiscover(){
     tClient.println();
   }
 
-  // ToDo: Send a /config JSON for the status entity
+  // Prepare a /config JSON for the status entity
   jsonDoc["name"] = "Roller Door Status";
   jsonDoc["stat_t"] = "~tele/HASS_STATE";
   jsonDoc["json_attributes_topic"] = "~tele/HASS_STATE";
@@ -293,6 +344,10 @@ void setup() {
     pinMode(doorUpPin,INPUT); 
     pinMode(boardLed,OUTPUT); 
     pinMode(doorDownPin,INPUT);  
+    pinMode(doorButtonPin,OUTPUT); 
+
+    // Set output high immediately
+    digitalWrite(doorButtonPin,HIGH);
 
     doorStatus = unknown;
     Serial.begin();
@@ -458,12 +513,19 @@ void loop()
         }
         Serial.println("Door now opening");
     }
+
+    // Process the command to open/close the door
+    if(pushButton){
+        pushButton = false;
+        digitalWrite(doorButtonPin,LOW);
+        pulseTimer.start();
+    }
+
     rssi=WiFi.RSSI();
 
     // Process MQTT Stuff
     if (mqttClient.isConnected())
         mqttClient.loop();
-
 
     //  Remote Reset Function
     if ((resetFlag) && (millis() - rebootSync >=  rebootDelayMillis)) {
