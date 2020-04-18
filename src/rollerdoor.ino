@@ -4,7 +4,7 @@
 // #include <stdarg.h>
 #include <MQTT.h>
 
-#define RD_VERSION "1.5.0"
+#define RD_VERSION "1.6.0"
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -335,6 +335,7 @@ void sendAutoDiscover(){
   jsonDoc["stat_t"] = "~tele/HASS_STATE";
   jsonDoc["json_attributes_topic"] = "~tele/HASS_STATE";
   jsonDoc["val_tpl"] = "{{value_json[\'RSSI\']}}";
+  jsonDoc["ic"] = "mdi:information-outline";
 
   jsonDoc.remove("pl_off");
   jsonDoc.remove("pl_on");
@@ -343,12 +344,13 @@ void sendAutoDiscover(){
   jsonDoc.remove("pl_cls");
   jsonDoc.remove("pl_open");
 
-  jsonDoc["unit_of_meas"] = " ";
+  jsonDoc["unit_of_meas"] = "dBm";
   jsonDoc["uniq_id"] = miniDeviceID+"_status";
   device.remove("connections");
   device["name"] = ROLLERDOOR;
-  device["model"] = "Particle Photon";
-  device["sw_version"] = RD_VERSION;
+  device["mdl"] = "Particle Photon";
+  device["sw"] = RD_VERSION;
+  device["mf"] = "PW&A";
 
   msg = "";
   serializeJson(jsonDoc,msg);
