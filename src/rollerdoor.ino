@@ -3,8 +3,9 @@
 #include <application.h>
 // #include <stdarg.h>
 #include <MQTT.h>
+#include <mcp23s17.h>
 
-#define RD_VERSION "1.6.0"
+#define RD_VERSION "1.6.1"
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -12,6 +13,9 @@
 #define __FILENAME__ (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
 #include <map>
 #include <unordered_map>
+
+mcp23s17 gpio_x(mcp23s17::HardwareAddress::HW_ADDR_0); // All addressing pins set to GND
+
 char gDeviceInfo[255]; // Device Status string - static version number, build date etc
 
 // 
@@ -21,6 +25,12 @@ int doorUpPin = D0; // Input from door up hall effect sensor
 int doorDownPin = D1; // Input from door down hall effect sensor
 int boardLed = D7; // This is the LED that is already on your device.
 int doorButtonPin = D2; // Output to push the door open/close button
+
+//
+// mcs23s17 pins
+//
+#define RELAY1_PIN 1 // Hopefully pin 1 is GPA1 whch is the first relay.
+#define RELAY2_PIN 0 // Hopefully pin 1 is GPA1 whch is the first relay.
 
 //
 // System status vars
@@ -79,8 +89,8 @@ telnetStates telnetState = DISCONNECTED;
 char myIpString[ ] = "000.000.000.000";
 
 // Operational status vars
-enum doorStates {unknown,open,opening,closed,closing,ds_error,stopped};
-const char* stateNames[] = {"unknown","open","opening","closed","closing","error","stopped"};
+enum doorStates {unknown,open,opening,closed,closing,ds_error,stopped,moving};
+const char* stateNames[] = {"unknown","open","opening","closed","closing","error","stopped","moving"};
 enum doorCommands {NONE, OPEN, CLOSE, STOP};
 doorCommands doorCommand = NONE;
 doorStates doorStatus = unknown;
@@ -93,15 +103,27 @@ Timer pulseTimer(RELEASE_PULSE_WIDTH, releaseTheButton,TRUE);
 // Duration is set by RELEASE_PULSE_WIDTH ms
 void pushTheButton(){
 	digitalWrite(doorButtonPin,LOW);
+  gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::HIGH);
 	pulseTimer.start();
 	Serial.println("Pushing the button");
+  if (telnetState == CONNECTED) {
+    // serializeJsonPretty(gDeviceInfo, tClient);
+    tClient.println("Pushing the button");
+  }
 }
 
 // Callback to release the button once the pulsewidth timer has expired
 void releaseTheButton()
 {
 	digitalWrite(doorButtonPin,HIGH);
+  gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::LOW);
 	Serial.println("Releasing the button");
+  // Send update to TCP Client
+  if (telnetState == CONNECTED) {
+    // serializeJsonPretty(gDeviceInfo, tClient);
+    tClient.println("Releasing the button");
+  }
+
 }
 
 // Use the external antenna if available
@@ -235,6 +257,10 @@ String tnetToString(int tnetState){
 }
 
 void updateStatus(){
+    if (telnetState == CONNECTED) {
+      tClient.println("Sending Status update");
+    }
+
     // Update values first
     IPAddress myIP = WiFi.localIP();
     sprintf(myIpString, "%d.%d.%d.%d", myIP[0], myIP[1], myIP[2], myIP[3]);
@@ -261,6 +287,12 @@ void updateStatus(){
         mqttClient.publish(baseTopic+"tele/LWT","Online",true);
         mqttClient.publish(baseTopic+"tele/HASS_STATE",gDeviceInfo,true);
     }
+    // Send update to TCP Client
+    if (telnetState == CONNECTED) {
+        // serializeJsonPretty(gDeviceInfo, tClient);
+        tClient.println(gDeviceInfo);
+    }
+
 }
 
 // Serialize JSON and publish to MQTT Client
@@ -374,17 +406,22 @@ void publishAll(uint32_t doorStatus) {
 
 void setup() {
 
+    // General GPIO setup
     pinMode(doorUpPin,INPUT); 
     pinMode(boardLed,OUTPUT); 
     pinMode(doorDownPin,INPUT);  
     pinMode(doorButtonPin,OUTPUT); 
 
-    // Set output high immediately
+    // mcp23s17 setup
+    gpio_x.pinMode(RELAY1_PIN, mcp23s17::PinMode::OUTPUT);
+
+    // Set output high (not grounded) immediately
     digitalWrite(doorButtonPin,HIGH);
+    gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::LOW);
 
     doorStatus = unknown;
     Serial.begin();
-	// Serial1.begin(4800,SERIAL_8N1); // open serial communications to the photon
+	  // Serial1.begin(4800,SERIAL_8N1); // open serial communications to the photon
 
     // Announce function
     Particle.function("reset", cloudResetFunction);
@@ -453,6 +490,7 @@ void loop()
     if (tClient.connected()) {
 	    if(telnetState == DISCONNECTED){
 		    telnetState = CONNECTED;
+        tClient.println("Hello!");
 		    Particle.publish("rollerdoor/tcp_connection","Connected",PRIVATE);
 		    published = false; // Trigger sending of data immediately
 	    }
@@ -488,7 +526,11 @@ void loop()
                     publishAll(doorStatus);
                     oldDoorStatus = doorStatus;
                 }
-                Serial.println("Housten, we have a problem");
+                Serial.println("Both open and closed sensors at the same time!");
+                if (telnetState == CONNECTED) {
+                  // serializeJsonPretty(gDeviceInfo, tClient);
+                  tClient.println("Both open and closed sensors at the same time!");
+                }
             }
     }
     else if (doorUp)
@@ -556,6 +598,10 @@ void loop()
 				case NONE:
 					break;
 				case STOP:
+          if (telnetState == CONNECTED) {
+            // serializeJsonPretty(gDeviceInfo, tClient);
+            tClient.println("Received STOP command");
+          }
 					if ((doorStatus == opening )|(doorStatus == closing))
 						{
 							pushTheButton();
@@ -563,6 +609,10 @@ void loop()
 						}
 					break;
 				case OPEN:
+          if (telnetState == CONNECTED) {
+            // serializeJsonPretty(gDeviceInfo, tClient);
+            tClient.println("Received OPEN command");
+          }
 					if(doorStatus == closing)
 						{ 
 							pushTheButton();
@@ -573,13 +623,18 @@ void loop()
 						{ 
 							pushTheButton();
 						}
-					if(doorStatus == unknown)
+					if((doorStatus == unknown )|(doorStatus == stopped))
 						{ 
+              doorStatus = moving;
 							pushTheButton();
 							pushButton = true;
 						}
 					break;
 				case CLOSE:
+          if (telnetState == CONNECTED) {
+            // serializeJsonPretty(gDeviceInfo, tClient);
+            tClient.println("Received CLOSE command");
+          }
 					if(doorStatus == opening)
 						{ 
 							pushTheButton();
@@ -590,8 +645,9 @@ void loop()
 						{ 
 							pushTheButton();
 						}
-					if(doorStatus == unknown)
+					if((doorStatus == unknown )|(doorStatus == stopped))
 						{ 
+              doorStatus = moving;
 							pushTheButton();
 							pushButton = true;
 						}
@@ -610,6 +666,11 @@ void loop()
 
     //  Remote Reset Function
     if ((resetFlag) && (millis() - rebootSync >=  rebootDelayMillis)) {
+        if (telnetState == CONNECTED) {
+          // serializeJsonPretty(gDeviceInfo, tClient);
+          tClient.println("Received Particle RESET command");
+        }
+
         Particle.publish("Debug", "Remote Reset Initiated", 300, PRIVATE);
         delay(INTER_PUBLISH_DELAY); // A little delay after each publish to not overload the quota of 4 per second
         if (mqttClient.isConnected()) {
@@ -620,6 +681,10 @@ void loop()
 
     //  Remote AutoDiscovery Function
     if (autoDiscoverFlag) {
+        if (telnetState == CONNECTED) {
+          // serializeJsonPretty(gDeviceInfo, tClient);
+          tClient.println("Received Particle AUTODISCOVER command");
+        }
         autoDiscoverFlag = false;
         Particle.publish("Debug", "AutoDiscovery triggered", 300, PRIVATE);
         delay(INTER_PUBLISH_DELAY); // A little delay after each publish to not overload the quota of 4 per second
@@ -627,6 +692,10 @@ void loop()
     }
     //  Remote publish Function
     if (publishFlag) {
+        if (telnetState == CONNECTED) {
+          // serializeJsonPretty(gDeviceInfo, tClient);
+          tClient.println("Received Particle PUBLISH command");
+        }
         publishFlag = false;
         Particle.publish("Debug", "Publish triggered", 300, PRIVATE);
         // Initiate a publish of current data
