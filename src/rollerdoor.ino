@@ -5,7 +5,7 @@
 #include <MQTT.h>
 #include <mcp23s17.h>
 
-#define RD_VERSION "1.6.1"
+#define RD_VERSION "1.6.2"
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -294,7 +294,17 @@ void updateStatus(){
     }
 
 }
-
+void mqttConnectAndSubscribe()
+{
+  // connect to the MQTT broker
+  mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
+  if(mqttClient.isConnected()){
+      mqttClient.subscribe("cmnd/rollerdoor/state");
+      mqttClient.subscribe("cmnd/rollerdoor/autodiscover");
+      mqttClient.subscribe(baseTopic+"cover/set");
+      sendAutoDiscover();
+  }
+}
 // Serialize JSON and publish to MQTT Client
 void sendMqtt(const String &topic, const String &msg, bool retain){
   // Try three times 10 seconds apart
@@ -305,7 +315,8 @@ void sendMqtt(const String &topic, const String &msg, bool retain){
         // Particle.publish("Debug", "MQTT Published", 300, PRIVATE);
         return;
     }
-    mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
+    mqttConnectAndSubscribe();
+    // mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
     delay(10000);
     Particle.publish("Debug", "Reconnect MQTT", 300, PRIVATE);
   }
@@ -448,13 +459,14 @@ void setup() {
         Particle.process();
 
     // connect to the MQTT broker
-    mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
-    if(mqttClient.isConnected()){
-        mqttClient.subscribe("cmnd/rollerdoor/state");
-        mqttClient.subscribe("cmnd/rollerdoor/autodiscover");
-				mqttClient.subscribe(baseTopic+"cover/set");
-        sendAutoDiscover();
-    }
+    mqttConnectAndSubscribe();
+    // mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
+    // if(mqttClient.isConnected()){
+    //     mqttClient.subscribe("cmnd/rollerdoor/state");
+    //     mqttClient.subscribe("cmnd/rollerdoor/autodiscover");
+		// 		mqttClient.subscribe(baseTopic+"cover/set");
+    //     sendAutoDiscover();
+    // }
 
     // Find my IP address and make it and a bunch of variables publicly available via particle.io
     Particle.variable("devIP", myIpString, STRING);  // Var used to get IP for telnet client.
