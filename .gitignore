@@ -8,3 +8,4 @@ src/*.cpp
 .vscode/settings.json
 foo.stuff
 photon_firmware_*.bin
+.vscode/settings.json

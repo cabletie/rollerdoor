@@ -5,7 +5,7 @@
 #include <MQTT.h>
 #include <mcp23s17.h>
 
-#define RD_VERSION "1.6.2"
+#define RD_VERSION "1.7.0"
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -14,7 +14,7 @@
 #include <map>
 #include <unordered_map>
 
-mcp23s17 gpio_x(mcp23s17::HardwareAddress::HW_ADDR_0); // All addressing pins set to GND
+// mcp23s17 gpio_x(mcp23s17::HardwareAddress::HW_ADDR_0); // All addressing pins set to GND
 
 char gDeviceInfo[255]; // Device Status string - static version number, build date etc
 
@@ -102,8 +102,8 @@ Timer pulseTimer(RELEASE_PULSE_WIDTH, releaseTheButton,TRUE);
 // Actually push the button to the roller door
 // Duration is set by RELEASE_PULSE_WIDTH ms
 void pushTheButton(){
-	digitalWrite(doorButtonPin,LOW);
-  gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::HIGH);
+	digitalWrite(doorButtonPin,HIGH);
+  // gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::HIGH);
 	pulseTimer.start();
 	Serial.println("Pushing the button");
   if (telnetState == CONNECTED) {
@@ -115,8 +115,8 @@ void pushTheButton(){
 // Callback to release the button once the pulsewidth timer has expired
 void releaseTheButton()
 {
-	digitalWrite(doorButtonPin,HIGH);
-  gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::LOW);
+	digitalWrite(doorButtonPin,LOW);
+  // gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::LOW);
 	Serial.println("Releasing the button");
   // Send update to TCP Client
   if (telnetState == CONNECTED) {
@@ -424,11 +424,11 @@ void setup() {
     pinMode(doorButtonPin,OUTPUT); 
 
     // mcp23s17 setup
-    gpio_x.pinMode(RELAY1_PIN, mcp23s17::PinMode::OUTPUT);
+    // gpio_x.pinMode(RELAY1_PIN, mcp23s17::PinMode::OUTPUT);
 
     // Set output high (not grounded) immediately
-    digitalWrite(doorButtonPin,HIGH);
-    gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::LOW);
+    digitalWrite(doorButtonPin,LOW);
+    // gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::LOW);
 
     doorStatus = unknown;
     Serial.begin();
