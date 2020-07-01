@@ -5,7 +5,7 @@
 #include <MQTT.h>
 #include <mcp23s17.h>
 
-#define RD_VERSION "1.7.0"
+#define RD_VERSION "1.7.2"
 #define ARDUINOJSON_ENABLE_PROGMEM 0
 #include <Arduino.h>
 #include <ArduinoJson.h>
@@ -51,9 +51,14 @@ String sBssid = "";
 // period between sending system status messages
 // 5 minutes
 #define SEND_STATUS_PERIOD 300000UL
+// Period between checks for MQTT connection
+// 1 Minute
+#define CHECK_MQTT_PERIOD 60000UL
 
 elapsedMillis senddata_timeout = 0;
 elapsedMillis sendstatus_timeout = 0;
+elapsedMillis checkmqtt_timeout = 0;
+
 // Roller door release pulse width in ms
 #define RELEASE_PULSE_WIDTH 500
 
@@ -299,13 +304,15 @@ void updateStatus(){
 }
 void mqttConnectAndSubscribe()
 {
-  // connect to the MQTT broker
-  mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
-  if(mqttClient.isConnected()){
+  // connect to the MQTT broker if not already
+  if(!mqttClient.isConnected()){
+    if(mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS))
+    {
       mqttClient.subscribe("cmnd/rollerdoor/state");
       mqttClient.subscribe("cmnd/rollerdoor/autodiscover");
       mqttClient.subscribe(baseTopic+"cover/set");
       sendAutoDiscover();
+    }
   }
 }
 // Serialize JSON and publish to MQTT Client
@@ -419,79 +426,78 @@ void publishAll(uint32_t doorStatus) {
 }
 
 void setup() {
+  // General GPIO setup
+  pinMode(doorUpPin,INPUT); 
+  pinMode(boardLed,OUTPUT); 
+  pinMode(doorDownPin,INPUT);  
+  pinMode(doorButtonPin,OUTPUT); 
 
-    // General GPIO setup
-    pinMode(doorUpPin,INPUT); 
-    pinMode(boardLed,OUTPUT); 
-    pinMode(doorDownPin,INPUT);  
-    pinMode(doorButtonPin,OUTPUT); 
+  // mcp23s17 setup
+  // gpio_x.pinMode(RELAY1_PIN, mcp23s17::PinMode::OUTPUT);
 
-    // mcp23s17 setup
-    // gpio_x.pinMode(RELAY1_PIN, mcp23s17::PinMode::OUTPUT);
+  // Set output high (not grounded) immediately
+  digitalWrite(doorButtonPin,LOW);
+  // gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::LOW);
 
-    // Set output high (not grounded) immediately
-    digitalWrite(doorButtonPin,LOW);
-    // gpio_x.digitalWrite(RELAY1_PIN, mcp23s17::PinLatchValue::LOW);
+  doorStatus = unknown;
+  Serial.begin();
+  // Serial1.begin(4800,SERIAL_8N1); // open serial communications to the photon
 
-    doorStatus = unknown;
-    Serial.begin();
-	  // Serial1.begin(4800,SERIAL_8N1); // open serial communications to the photon
+  // Announce function
+  Particle.function("reset", cloudResetFunction);
+  Particle.function("mqtt", cloudAutoDiscoverFunction);
+  Particle.function("publish", cloudPublishFunction);
+  Particle.connect();
 
-    // Announce function
-    Particle.function("reset", cloudResetFunction);
-    Particle.function("mqtt", cloudAutoDiscoverFunction);
-    Particle.function("publish", cloudPublishFunction);
-    Particle.connect();
+  // Initialise some static info
+  deviceID = System.deviceID();
+  // Pick out the middle bit of the ID 
+  // - the RH end seems to not change sometimes and 
+  // - the LH has too many zeroes.
+  int didl = deviceID.length();
+  int start = (didl-UID_LENGTH)<0?0:(didl-UID_LENGTH);
+  start = (start>UID_LENGTH)?UID_LENGTH:start;
+  miniDeviceID = deviceID.substring(start,start+UID_LENGTH);
+  // miniDeviceID = deviceID.substring(8,15);
+  Serial.printf("miniDeviceID: %s\n",miniDeviceID.c_str());
+  baseTopic = "rd-"+miniDeviceID+"/";
+  statusTopic = baseTopic+"tele/STATE";
 
-    // Initialise some static info
-    deviceID = System.deviceID();
-    // Pick out the middle bit of the ID 
-    // - the RH end seems to not change sometimes and 
-    // - the LH has too many zeroes.
-    int didl = deviceID.length();
-    int start = (didl-UID_LENGTH)<0?0:(didl-UID_LENGTH);
-    start = (start>UID_LENGTH)?UID_LENGTH:start;
-    miniDeviceID = deviceID.substring(start,start+UID_LENGTH);
-    // miniDeviceID = deviceID.substring(8,15);
-    Serial.printf("miniDeviceID: %s\n",miniDeviceID.c_str());
-    baseTopic = "rd-"+miniDeviceID+"/";
-    statusTopic = baseTopic+"tele/STATE";
+  // Wait for cloud connection
+  while(!Particle.connected())
+    Particle.process();
 
-    // Wait for cloud connection
-	while(!Particle.connected())
-        Particle.process();
+  // connect to the MQTT broker
+  mqttConnectAndSubscribe();
+  // mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
+  // if(mqttClient.isConnected()){
+  //     mqttClient.subscribe("cmnd/rollerdoor/state");
+  //     mqttClient.subscribe("cmnd/rollerdoor/autodiscover");
+  // 		mqttClient.subscribe(baseTopic+"cover/set");
+  //     sendAutoDiscover();
+  // }
 
-    // connect to the MQTT broker
-    mqttConnectAndSubscribe();
-    // mqttClient.connect(ROLLERDOOR,MQTT_USER,MQTT_PASS);
-    // if(mqttClient.isConnected()){
-    //     mqttClient.subscribe("cmnd/rollerdoor/state");
-    //     mqttClient.subscribe("cmnd/rollerdoor/autodiscover");
-		// 		mqttClient.subscribe(baseTopic+"cover/set");
-    //     sendAutoDiscover();
-    // }
+  // Find my IP address and make it and a bunch of variables publicly available via particle.io
+  Particle.variable("devIP", myIpString, STRING);  // Var used to get IP for telnet client.
+  Particle.variable("telnetState",telnetState);
+  Particle.variable("rssi", rssi);
+  Particle.variable("bssid", sBssid);
 
-    // Find my IP address and make it and a bunch of variables publicly available via particle.io
-    Particle.variable("devIP", myIpString, STRING);  // Var used to get IP for telnet client.
-    Particle.variable("telnetState",telnetState);
-    Particle.variable("rssi", rssi);
-    Particle.variable("bssid", sBssid);
+  // Operational variables
+  Particle.variable("deviceInfo",gDeviceInfo);
+  Particle.variable("doorStatus",doorStatus);
 
-    // Operational variables
-    Particle.variable("deviceInfo",gDeviceInfo);
-    Particle.variable("doorStatus",doorStatus);
+  updateStatus();
 
-    updateStatus();
+  tServer.begin(); // begin listening for TCP connections
 
-    tServer.begin(); // begin listening for TCP connections
+  // Particle.variable("doorStatus",doorStatus);
+  Particle.publish("doorStatus","unknown",60,PRIVATE);
+  // Particle.publish("doorEvent","127",60,PRIVATE);
 
-    // Particle.variable("doorStatus",doorStatus);
-    Particle.publish("doorStatus","unknown",60,PRIVATE);
-    // Particle.publish("doorEvent","127",60,PRIVATE);
-
-    // Serial.begin();
-    digitalWrite(boardLed,LOW); // Turn off board LED
-    ledStatus = LOW;
+  // Serial.begin();
+  digitalWrite(boardLed,LOW); // Turn off board LED
+  ledStatus = LOW;
 }
 
 // Now for the loop.
@@ -623,6 +629,7 @@ void loop()
             doorStatus = stopped;
           }
         break;
+        // Otherwise do nothing i.e. STOP when open or closed does nothing
       case OPEN:
         if (telnetState == CONNECTED) {
           tClient.println("Received OPEN command");
@@ -719,5 +726,10 @@ void loop()
     sendStateFlag = false;
     updateStatus();
     sendstatus_timeout = 0;
+  }
+  // checkmqtt_timeout - make sure MQTT is connected and subscribed
+  if((checkmqtt_timeout >= CHECK_MQTT_PERIOD)){
+    mqttConnectAndSubscribe();
+    checkmqtt_timeout = 0;
   }
 }
