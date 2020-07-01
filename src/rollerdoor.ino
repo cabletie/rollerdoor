@@ -209,6 +209,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 		else
 				doorCommand = NONE;
 		Serial.println(p);
+    if (telnetState == CONNECTED) {
+      tClient.println(p);
+    }
   }
 }
 
@@ -495,17 +498,17 @@ void setup() {
 
 void loop()
 {
-    // Create the main JSON document for seding
-    DynamicJsonDocument jsonDoc(800);
+  // Create the main JSON document for sending
+  DynamicJsonDocument jsonDoc(800);
 
-    // Deal with setting up Telnet client
-    if (tClient.connected()) {
-	    if(telnetState == DISCONNECTED){
-		    telnetState = CONNECTED;
-        tClient.println("Hello!");
-		    Particle.publish("rollerdoor/tcp_connection","Connected",PRIVATE);
-		    published = false; // Trigger sending of data immediately
-	    }
+  // Deal with setting up Telnet client
+  if (tClient.connected()) {
+    if(telnetState == DISCONNECTED){
+      telnetState = CONNECTED;
+      tClient.println("Hello!");
+      Particle.publish("rollerdoor/tcp_connection","Connected",PRIVATE);
+      published = false; // Trigger sending of data immediately
+    }
 	}
 	else {
 		// if no client is yet connected, check for a new connection
@@ -517,207 +520,204 @@ void loop()
 		tClient = tServer.available();
 	}
 
-    if((doorStatus == unknown) & !unknown_timer.isActive())
-        unknown_timer.start();
-    else if((doorStatus != unknown) & unknown_timer.isActive())
-        unknown_timer.stop();
+  if((doorStatus == unknown) & !unknown_timer.isActive())
+      unknown_timer.start();
+  else if((doorStatus != unknown) & unknown_timer.isActive())
+      unknown_timer.stop();
 
-    doorUp = !digitalRead(doorUpPin);
-    doorDown = !digitalRead(doorDownPin);
+  // Get door endstop input statuses
+  doorUp = !digitalRead(doorUpPin);
+  doorDown = !digitalRead(doorDownPin);
 
-    if (doorUp & doorDown)
+  if (doorUp & doorDown) // Illegal state or there's a space-time continuum problem
+  {
+    if (doorStatus != ds_error) // Transition from not error to error
     {
-            if (doorStatus != ds_error)
-            {
-                Particle.publish("doorStatus","error",60,PRIVATE);
-                // Particle.publish("doorEvent","127",60,PRIVATE);
-                moving_timer.stop();
-                unknown_timer.start();
-                doorStatus = ds_error;
-                if (oldDoorStatus != doorStatus){
-                    publishAll(doorStatus);
-                    oldDoorStatus = doorStatus;
-                }
-                Serial.println("Both open and closed sensors at the same time!");
-                if (telnetState == CONNECTED) {
-                  // serializeJsonPretty(gDeviceInfo, tClient);
-                  tClient.println("Both open and closed sensors at the same time!");
-                }
-            }
+      Particle.publish("doorStatus","error",60,PRIVATE);
+      // Particle.publish("doorEvent","127",60,PRIVATE);
+      moving_timer.stop();
+      unknown_timer.start();
+      doorStatus = ds_error;
+      // Publish status if there's been a change
+      if (oldDoorStatus != doorStatus){
+          publishAll(doorStatus);
+          oldDoorStatus = doorStatus;
+      }
+      Serial.println("Both open and closed sensors at the same time!");
+      if (telnetState == CONNECTED) {
+        // serializeJsonPretty(gDeviceInfo, tClient);
+        tClient.println("Both open and closed sensors at the same time!");
+      }
     }
-    else if (doorUp)
+  } 
+  else if (doorUp) 
+  {
+    if ((doorStatus==opening) | (doorStatus==unknown) | (doorStatus==closing))
     {
-        if ((doorStatus==opening) | (doorStatus==unknown) | (doorStatus==closing))
-        {
-            Particle.publish("doorStatus","open",60,PRIVATE);
-            // Particle.publish("doorEvent","255",60,PRIVATE);
-            moving_timer.stop();
-            digitalWrite(boardLed,HIGH);
-            Serial.println("Door now open");
-        }
-        doorStatus=open;
-        if (oldDoorStatus != doorStatus){
-            publishAll(doorStatus);
-            oldDoorStatus = doorStatus;
-        }
+      Particle.publish("doorStatus","open",60,PRIVATE);
+      // Particle.publish("doorEvent","255",60,PRIVATE);
+      moving_timer.stop();
+      digitalWrite(boardLed,HIGH);
+      Serial.println("Door now open");
     }
-    else if(doorStatus==open)
-    {// was open
-        Particle.publish("doorStatus","closing",60,PRIVATE);
-        // Particle.publish("doorEvent","85",60,PRIVATE);
-        moving_timer.start();
-        doorStatus=closing;
-        if (oldDoorStatus != doorStatus){
-            publishAll(doorStatus);
-            oldDoorStatus = doorStatus;
-        }
-        Serial.println("Door now closing");
+    doorStatus=open;
+    if (oldDoorStatus != doorStatus){
+      publishAll(doorStatus);
+      oldDoorStatus = doorStatus;
     }
-    else if (doorDown)
+  }
+  else if(doorStatus==open)
+  {// was open
+    Particle.publish("doorStatus","closing",60,PRIVATE);
+    moving_timer.start();
+    doorStatus=closing;
+    if (oldDoorStatus != doorStatus){
+      publishAll(doorStatus);
+      oldDoorStatus = doorStatus;
+    }
+    Serial.println("Door now closing");
+  }
+  else if (doorDown)
+  {
+    if ((doorStatus==closing) | (doorStatus == unknown) | (doorStatus == opening))
     {
-        if ((doorStatus==closing) | (doorStatus == unknown) | (doorStatus == opening))
-        {
-            Particle.publish("doorStatus","closed",60,PRIVATE);
-            // Particle.publish("doorEvent","0",60,PRIVATE);
-            moving_timer.stop();
-            digitalWrite(boardLed,LOW);
-            Serial.println("Door now closed");
-        }
-        doorStatus=closed;
-        if (oldDoorStatus != doorStatus){
-            publishAll(doorStatus);
-            oldDoorStatus = doorStatus;
-        }
+        Particle.publish("doorStatus","closed",60,PRIVATE);
+        // Particle.publish("doorEvent","0",60,PRIVATE);
+        moving_timer.stop();
+        digitalWrite(boardLed,LOW);
+        Serial.println("Door now closed");
     }
-    else if(doorStatus==closed)
-    { // was closed
-        Particle.publish("doorStatus","opening",60,PRIVATE);
-        // Particle.publish("doorEvent","170",60,PRIVATE);
-        moving_timer.start();
-        doorStatus=opening;
-        if (oldDoorStatus != doorStatus){
-            publishAll(doorStatus);
-            oldDoorStatus = doorStatus;
-        }
-        Serial.println("Door now opening");
+    doorStatus=closed;
+    if (oldDoorStatus != doorStatus){
+        publishAll(doorStatus);
+        oldDoorStatus = doorStatus;
     }
-
-    // Process the command to open/close the door
-    if(pushButton){
-        pushButton = false; // No more to do
-				switch (doorCommand)
-				{
-				case NONE:
-					break;
-				case STOP:
-          if (telnetState == CONNECTED) {
-            // serializeJsonPretty(gDeviceInfo, tClient);
-            tClient.println("Received STOP command");
-          }
-					if ((doorStatus == opening )|(doorStatus == closing))
-						{
-							pushTheButton();
-							doorStatus = stopped;
-						}
-					break;
-				case OPEN:
-          if (telnetState == CONNECTED) {
-            // serializeJsonPretty(gDeviceInfo, tClient);
-            tClient.println("Received OPEN command");
-          }
-					if(doorStatus == closing)
-						{ 
-							pushTheButton();
-							doorStatus = stopped;
-							pushButton = true;
-						}
-					if(doorStatus == closed) 
-						{ 
-							pushTheButton();
-						}
-					if((doorStatus == unknown )|(doorStatus == stopped))
-						{ 
-              doorStatus = moving;
-							pushTheButton();
-							pushButton = true;
-						}
-					break;
-				case CLOSE:
-          if (telnetState == CONNECTED) {
-            // serializeJsonPretty(gDeviceInfo, tClient);
-            tClient.println("Received CLOSE command");
-          }
-					if(doorStatus == opening)
-						{ 
-							pushTheButton();
-							doorStatus = stopped;
-							pushButton = true;
-						}
-					if(doorStatus == open) 
-						{ 
-							pushTheButton();
-						}
-					if((doorStatus == unknown )|(doorStatus == stopped))
-						{ 
-              doorStatus = moving;
-							pushTheButton();
-							pushButton = true;
-						}
-					break;
-				
-				default:
-					break;
-				}
+  }
+  else if(doorStatus==closed)
+  { // was closed
+    Particle.publish("doorStatus","opening",60,PRIVATE);
+    // Particle.publish("doorEvent","170",60,PRIVATE);
+    moving_timer.start();
+    doorStatus=opening;
+    if (oldDoorStatus != doorStatus){
+        publishAll(doorStatus);
+        oldDoorStatus = doorStatus;
     }
+    Serial.println("Door now opening");
+  }
 
-    rssi=WiFi.RSSI();
-
-    // Process MQTT Stuff
-    if (mqttClient.isConnected())
-        mqttClient.loop();
-
-    //  Remote Reset Function
-    if ((resetFlag) && (millis() - rebootSync >=  rebootDelayMillis)) {
+  // Process the command to open/close the door
+  if(pushButton){
+    pushButton = false; // No more to do
+    switch (doorCommand)
+    {
+      case NONE:
+        break;
+      case STOP:
         if (telnetState == CONNECTED) {
-          // serializeJsonPretty(gDeviceInfo, tClient);
-          tClient.println("Received Particle RESET command");
+          tClient.println("Received STOP command");
         }
-
-        Particle.publish("Debug", "Remote Reset Initiated", 300, PRIVATE);
-        delay(INTER_PUBLISH_DELAY); // A little delay after each publish to not overload the quota of 4 per second
-        if (mqttClient.isConnected()) {
-        mqttClient.publish(baseTopic+"tele/LWT","Offline",true);
-        }
-        System.reset();
-    }
-
-    //  Remote AutoDiscovery Function
-    if (autoDiscoverFlag) {
+        if ((doorStatus == opening )|(doorStatus == closing))
+          {
+            pushTheButton();
+            doorStatus = stopped;
+          }
+        break;
+      case OPEN:
         if (telnetState == CONNECTED) {
-          // serializeJsonPretty(gDeviceInfo, tClient);
-          tClient.println("Received Particle AUTODISCOVER command");
+          tClient.println("Received OPEN command");
         }
-        autoDiscoverFlag = false;
-        Particle.publish("Debug", "AutoDiscovery triggered", 300, PRIVATE);
-        delay(INTER_PUBLISH_DELAY); // A little delay after each publish to not overload the quota of 4 per second
-        sendAutoDiscover();
-    }
-    //  Remote publish Function
-    if (publishFlag) {
+        if(doorStatus == closing)
+        { 
+          pushTheButton();
+          doorStatus = stopped;
+          pushButton = true;
+        }
+        if(doorStatus == closed) 
+        { 
+          pushTheButton();
+        }
+        if((doorStatus == unknown )|(doorStatus == stopped))
+        { 
+          doorStatus = moving;
+          pushTheButton();
+          pushButton = true;
+        }
+        break;
+      case CLOSE:
         if (telnetState == CONNECTED) {
-          // serializeJsonPretty(gDeviceInfo, tClient);
-          tClient.println("Received Particle PUBLISH command");
+          tClient.println("Received CLOSE command");
         }
-        publishFlag = false;
-        Particle.publish("Debug", "Publish triggered", 300, PRIVATE);
-        // Initiate a publish of current data
-        published=false;
+        if(doorStatus == opening)
+          { 
+            pushTheButton();
+            doorStatus = stopped;
+            pushButton = true;
+          }
+        if(doorStatus == open) 
+          { 
+            pushTheButton();
+          }
+        if((doorStatus == unknown )|(doorStatus == stopped))
+          { 
+            doorStatus = moving;
+            pushTheButton();
+            pushButton = true;
+          }
+        break;      
+      default:
+        break;
     }
-    if((sendstatus_timeout >= SEND_STATUS_PERIOD) | sendStateFlag){
-        // Publish vars to particle.io
-        // Includes sending ~/tele/LWT Online to MQTT
-        sendStateFlag = false;
-        updateStatus();
-        sendstatus_timeout = 0;
+  }
+
+  rssi=WiFi.RSSI();
+
+  // Process MQTT Stuff
+  if (mqttClient.isConnected())
+    mqttClient.loop();
+
+  //  Remote Reset Function
+  if ((resetFlag) && (millis() - rebootSync >=  rebootDelayMillis)) {
+    if (telnetState == CONNECTED) {
+      // serializeJsonPretty(gDeviceInfo, tClient);
+      tClient.println("Received Particle RESET command");
     }
+
+    Particle.publish("Debug", "Remote Reset Initiated", 300, PRIVATE);
+    delay(INTER_PUBLISH_DELAY); // A little delay after each publish to not overload the quota of 4 per second
+    if (mqttClient.isConnected()) {
+    mqttClient.publish(baseTopic+"tele/LWT","Offline",true);
+    }
+    System.reset();
+  }
+
+  //  Remote AutoDiscovery Function
+  if (autoDiscoverFlag) {
+    if (telnetState == CONNECTED) {
+      // serializeJsonPretty(gDeviceInfo, tClient);
+      tClient.println("Received Particle AUTODISCOVER command");
+    }
+    autoDiscoverFlag = false;
+    Particle.publish("Debug", "AutoDiscovery triggered", 300, PRIVATE);
+    delay(INTER_PUBLISH_DELAY); // A little delay after each publish to not overload the quota of 4 per second
+    sendAutoDiscover();
+  }
+  //  Remote publish Function
+  if (publishFlag) {
+    if (telnetState == CONNECTED) {
+      // serializeJsonPretty(gDeviceInfo, tClient);
+      tClient.println("Received Particle PUBLISH command");
+    }
+    publishFlag = false;
+    Particle.publish("Debug", "Publish triggered", 300, PRIVATE);
+    // Initiate a publish of current data
+    published=false;
+  }
+  if((sendstatus_timeout >= SEND_STATUS_PERIOD) | sendStateFlag){
+    // Publish vars to particle.io
+    // Includes sending ~/tele/LWT Online to MQTT
+    sendStateFlag = false;
+    updateStatus();
+    sendstatus_timeout = 0;
+  }
 }
