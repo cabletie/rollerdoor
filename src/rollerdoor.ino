@@ -134,6 +134,12 @@ void releaseTheButton()
 // Use the external antenna if available
 STARTUP( WiFi.selectAntenna(ANT_AUTO));
 
+ApplicationWatchdog *wd;
+
+void watchdogHandler() {
+  System.reset(RESET_NO_WAIT);
+}
+
 // Setup doorStatus indicate LED update timer
 void updateDoorMovingStatusLed()
 {
@@ -426,14 +432,14 @@ void publishAll(uint32_t doorStatus) {
 }
 
 void setup() {
+  // Watchdog
+  wd = new ApplicationWatchdog(60000, watchdogHandler);
+
   // General GPIO setup
   pinMode(doorUpPin,INPUT); 
   pinMode(boardLed,OUTPUT); 
   pinMode(doorDownPin,INPUT);  
   pinMode(doorButtonPin,OUTPUT); 
-
-  // mcp23s17 setup
-  // gpio_x.pinMode(RELAY1_PIN, mcp23s17::PinMode::OUTPUT);
 
   // Set output high (not grounded) immediately
   digitalWrite(doorButtonPin,LOW);
@@ -732,4 +738,6 @@ void loop()
     mqttConnectAndSubscribe();
     checkmqtt_timeout = 0;
   }
+  // Feed the watchdog
+  wd->checkin();
 }
